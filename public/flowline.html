@@ -4860,6 +4860,10 @@ function initAudio() {
   AU.wind = layer(AU.pink, 'lowpass', 420, 0.9, 0);
   AU.windH = layer(AU.white, 'bandpass', 1500, 0.6, 0);
   AU.grind = layer(AU.white, 'bandpass', 3400, 9, 0);
+  /* the rail's own voice: the high `grind` hiss is the board sliding, this is
+     the steel tube resonating under it. Without a low layer a grind read as a
+     whistle with no contact behind it. */
+  AU.grindL = layer(AU.pink, 'bandpass', 420, 1.6, 0);
   const gp = ctx.createBiquadFilter(); gp.type = 'peaking'; gp.frequency.value = 5200; gp.gain.value = 8;
   AU.ready = true;
   AU.on = true;
@@ -4949,6 +4953,7 @@ const SFX = {
     set(AU.wind, (0.030 + 0.20 * Math.pow(wsp, 1.7)) * (air ? 1.22 : 1), 320 + sp * 26, 0.12);
     set(AU.windH, (air ? 0.10 : 0.032) * wsp, 1100 + sp * 90, 0.12);
     set(AU.grind, gr * 0.28 * (0.3 + 0.7 * spn), 2600 + sp * 90, 0.03);
+    set(AU.grindL, gr * 0.22 * (0.35 + 0.65 * spn), 340 + sp * 12, 0.04);
     // ice chatter clicks
     if (r.chatter > 0.35 && Math.random() < r.chatter * 0.5) noise(t, 0.05, 0.10 * r.chatter * gs, 'bandpass', 3000 + Math.random() * 3000, 7);
   },
@@ -4979,6 +4984,26 @@ const SFX = {
   whoosh(v) {
     if (!AU.ready || !AU.sfx) return; const t = now();
     noise(t, 0.34, 0.20 * v, 'bandpass', 500, 1.1, null, 2600);
+  },
+  /* board onto steel: an impact click, a low clank and a short bright ring.
+     Partials sit at non-integer ratios (1 : 2.76 : 5.4) so it reads as metal,
+     not a bell - integer harmonics chime. */
+  railOn(v) {
+    if (!AU.ready || !AU.sfx) return; const t = now();
+    const w = clamp(v, 0.3, 1);
+    noise(t, 0.05, 0.28 * w, 'highpass', 3200, 1.0);           // impact click
+    tone(480, t, 0.09, 'triangle', 0.12 * w, 210);             // body clank
+    tone(1325, t + 0.003, 0.11, 'triangle', 0.065 * w, 1250);  // metal ring
+    tone(2590, t + 0.003, 0.07, 'sine', 0.04 * w, 2400);
+    noise(t + 0.01, 0.16, 0.09 * w, 'bandpass', 1900, 3.5, AU.verb, 800);
+  },
+  /* leaving the rail: the ring stops dead (the continuous layers gate off) so
+     this is only the release - a short zip up and a click. */
+  railOff(v) {
+    if (!AU.ready || !AU.sfx) return; const t = now();
+    const w = clamp(v, 0.25, 1);
+    noise(t, 0.09, 0.13 * w, 'highpass', 2800, 0.8, null, 5200);
+    tone(760, t, 0.05, 'triangle', 0.05 * w, 980);
   },
   /* clipping a tree: a woody thud plus a shower of snow off the branches.
      rock hits swap the wood for a hard, brighter crack. */
@@ -10697,6 +10722,26 @@ const CRASH = {
   w1: 5.3, w2: 3.1, w3: 2.2,   // out-of-phase rates on the tumble angle
   dbg: null
 };
+/* ---- rail grind pose (R6) -----------------------------------------------
+   Grinding never had a pose of its own: pose() read edge/crouch/speed and a
+   rider on a rail just kept the riding stance, standing tall over steel.
+   A 50-50 is a BALANCE act: knees soak the rail chatter, both arms go wide
+   and level like a wire-walker, and the eyes are on the rail ahead, not the
+   horizon. Targets are blended in over ~0.12 s (out over ~0.2 s) through a
+   filtered gate, so stepping on and popping off never snaps a bone. The
+   micro-jitter rides the pelvis bank at 31 Hz-ish - the deck buzzing on the
+   steel - which the landing spring and wobble never provide because a clean
+   grind excites neither. `amt` 0 restores the shipped (no-op) pose. */
+const GRD = {
+  amt: 1,
+  crouch: 0.052,   // extra knee bend on the rail (m of pelvis drop)
+  out: 0.60,       // arm abduction - thrown wide for balance
+  lift: 0.76,      // upper-arm raise toward horizontal
+  elb: 0.32,       // elbows nearly straight (riding folds them to ~0.85)
+  gaze: 0.14,      // look down at the rail ahead
+  jit: 0.014,      // rail-chatter amplitude on the hips
+  dbg: null
+};
 const DOWN_V = new THREE.Vector3(0, -1, 0);
 const _rq1 = new THREE.Quaternion(), _rq2 = new THREE.Quaternion();
 const _rv1 = new THREE.Vector3(), _rv2 = new THREE.Vector3(), _rv3 = new THREE.Vector3();
@@ -10808,6 +10853,7 @@ class RiderBody {
         return Object.assign({}, SEC, { dbg: !!SEC.dbg });
       };
       G.dbg.rutK = v => { if (typeof v === 'number') RUT_K = v; return RUT_K; };
+      G.dbg.GRD = GRD;
       G.dbg.CRASH = CRASH;
       G.dbg.crash = (amt, ov) => {
         if (typeof amt === 'number') CRASH.amt = amt;
@@ -11044,6 +11090,19 @@ class RiderBody {
     /* counter-rotation, centrifugal bank and arm swing, distributed below */
     const cnt = SEC.cr * turn * sa, bnk = -SEC.lat * latG * sa;
     const asw = SEC.arm * turn * sa;
+    /* rail grind gate: filtered so stepping on/popping off never snaps a bone.
+       r.grinding is player-only state - bots and net ghosts read as 0. */
+    const grOn = (!down && !air && r.grinding) ? 1 : 0;
+    this.grB = (this.grB || 0) + (grOn - (this.grB || 0)) * (1 - Math.exp(-(grOn ? 9 : 5) * dt));
+    const gb = this.grB * GRD.amt;
+    /* air-spin coil: a real spin is thrown from the shoulders - the torso
+       winds INTO the rotation and the arms come in to speed it up. `turn` is
+       the same filtered omega the ground counter-rotation uses, so takeoff
+       hands the torso from counter-rotation (against the carve) to coil
+       (into the spin) continuously. Ground value is 0: on snow the SEC block
+       already owns the torso. */
+    const coil = air ? turn * sa : 0;
+    const coilA = Math.abs(coil);
     if (SEC.dbg) SEC.dbg = { turn, latG, landC, ant, cnt, bnk, om, sp: spRaw };
 
     /* Sliding turn vs carve. Always lean INTO the turn.
@@ -11075,7 +11134,7 @@ class RiderBody {
       + left * 0.038
       + right * 0.024
       + (air ? 0.045 : 0) - this.popT * 0.05, 0, 0.228)
-      + landC + pump;
+      + landC + pump + gb * GRD.crouch;
     this._crSm = this._crSm === undefined ? crouchTgt
       : this._crSm + (crouchTgt - this._crSm) * (1 - Math.exp(-12 * dt));
     B.pelvis.position.y = this.bindPelvisY - this._crSm;
@@ -11091,9 +11150,9 @@ class RiderBody {
       0.08);
     const lean = 0.03 - cr * 0.03 + left * 0.05 - right * 0.06
       + (air ? -0.06 : 0) + (down ? 0.35 : 0) - ant * 0.45 - landC * 0.40;
-    P.spine1.set(lean * 0.20, -edge * 0.10 * commit, 0.08);
-    P.spine2.set(lean * 0.12, -edge * 0.06 * commit, 0.05);
-    P.chest.set(lean * 0.06 + breathe, -edge * 0.03 * commit, 0.03);
+    P.spine1.set(lean * 0.20, -edge * 0.10 * commit, 0.08 + coil * 0.14);
+    P.spine2.set(lean * 0.12, -edge * 0.06 * commit, 0.05 + coil * 0.18);
+    P.chest.set(lean * 0.06 + breathe, -edge * 0.03 * commit, 0.03 + coil * 0.24);
     const hl = SEC.head * turn * sa;
     P.neck.set(0.14 + sp * 0.02, -bnk * 0.03, 0.20 + hl * 0.28);
     P.head.set(0.08 + sp * 0.02 - cr * 0.03 + landC * 0.30, -bnk * 0.04,
@@ -11101,19 +11160,23 @@ class RiderBody {
 
     const swing = Math.sin(t * 2.0) * 0.030 * (0.4 + 0.6 * sp);
     if (!grab) {
-      const out = lerp(0.20 + slideQ * 0.14, 0.08 + right * 0.06, carveQ) + (1 - bal) * 0.14;
+      /* coilA pulls both arms in and slightly up while spinning in the air -
+         the skater's moment-of-inertia trick, which is also what a snowboarder
+         actually does mid-540 */
+      const out = (lerp(0.20 + slideQ * 0.14, 0.08 + right * 0.06, carveQ) + (1 - bal) * 0.14)
+        * (1 - 0.45 * coilA);
       P.clavF.set(0.04 + right * 0.03, -0.02, -0.02);
       P.clavB.set(0.02, 0.04 + slideQ * 0.04, 0.02);
       P.upperF.set(
         -0.42 - commit * 0.22 - cr * 0.06 + swing - (1 - bal) * 0.16
-          - asw * 0.08 - landC * 0.55 + ant * 0.18 - right * 0.16,
+          - asw * 0.08 - landC * 0.55 + ant * 0.18 - right * 0.16 - coilA * 0.14,
         -out,
-        -0.10 - commit * 0.10);
+        -0.10 - commit * 0.10 + coil * 0.20);
       P.upperB.set(
         -0.22 - commit * 0.24 - cr * 0.04 - swing - (1 - bal) * 0.10
-          + asw * 0.06 - landC * 0.35 + ant * 0.12 + slideQ * 0.10,
+          + asw * 0.06 - landC * 0.35 + ant * 0.12 + slideQ * 0.10 - coilA * 0.12,
         out * (0.85 + 0.30 * slideQ),
-        0.08 + commit * 0.10);
+        0.08 + commit * 0.10 + coil * 0.20);
       P.foreF.set(-0.85 - commit * 0.30 - cr * 0.10 - right * 0.14, -0.04, 0.10);
       P.foreB.set(-0.62 - commit * 0.32 - cr * 0.08, 0.08 + slideQ * 0.08, -0.08);
       P.handF.set(0.10 + right * 0.06, 0, 0.04);
@@ -11131,6 +11194,32 @@ class RiderBody {
       P.upperB.set(-1.05, -0.55, 0.2);
       P.foreB.set(-0.55, 0, 0);
       P.handF.set(0.3, 0, 0); P.handB.set(0.10, 0, 0);
+    }
+
+    /* rail grind: wire-walker balance (see GRD). Blends over what the riding
+       terms wrote through the filtered `gb` gate, so the pose eases on as the
+       board settles onto the steel and eases off through the pop. Runs before
+       CRASH so a wipeout off a rail still wins. */
+    if (gb > 0.01) {
+      const jt = Math.sin(t * 31.4) * GRD.jit * gb;      // deck buzzing on steel
+      const L = (was, now) => lerp(fin(was, 0), now, gb);
+      const S = (n, pi, bk, tw) => P[n] && P[n].set(L(P[n].p, pi), L(P[n].k, bk), L(P[n].t, tw));
+      S('pelvis', 0.07 + landC * 0.10, jt, 0.10);
+      S('spine1', 0.10, jt * 0.6, 0.06);
+      S('spine2', 0.08, 0, 0.05);
+      S('chest', 0.06, 0, 0.04);
+      S('head', 0.08 + GRD.gaze, 0, 0.24);
+      /* both arms out wide and near-level, elbows open - none of the riding
+         pose's tucked forearms */
+      S('clavF', 0.02, -0.10, 0);
+      S('clavB', 0.02, 0.10, 0);
+      S('upperF', -GRD.lift - jt * 2.4, -GRD.out, -0.05);
+      S('upperB', -GRD.lift * 0.92 + jt * 2.4, GRD.out * 0.95, 0.05);
+      S('foreF', -GRD.elb, -0.06, 0.04);
+      S('foreB', -GRD.elb, 0.06, -0.04);
+      S('handF', 0.06, 0, 0);
+      S('handB', 0.06, 0, 0);
+      if (GRD.dbg) GRD.dbg = { gb: +gb.toFixed(3), jt: +jt.toFixed(4) };
     }
 
     /* wipeout: replace the fetal statue with a thrown-out, moving body.
@@ -11630,10 +11719,15 @@ class Rider {
           if (this.railCool <= 0) { this.hit(0.14 + sp * 0.005, 'off the rail'); this.railCool = 1.4; }
           this.grinding = 0; this.grindT = 0;
         } else {
+          if (!this.grinding) SFX.railOn(clamp(sp / 22, 0.35, 1));
           this.grinding = 1; this.grindT += dt;
           this.flow = Math.min(1, this.flow + dt * 0.30); this.stat.grind += dt;
         }
-      } else { if (this.grinding && this.grindT > 0.35) UI.toast('GRIND', (this.grindT).toFixed(1) + 's clean'); this.grinding = 0; this.grindT = 0; }
+      } else {
+        if (this.grinding && this.grindT > 0.35) UI.toast('GRIND', (this.grindT).toFixed(1) + 's clean');
+        if (this.grinding && this.grindT > 0.12) SFX.railOff(clamp(sp / 24, 0.3, 0.9));
+        this.grinding = 0; this.grindT = 0;
+      }
 
       /* ---- ice chatter ---- */
       this.chatter = approach(this.chatter, ice * absE * clamp(sp / 22, 0, 1.2), 8, dt);
@@ -11662,6 +11756,14 @@ class Rider {
       this.rut = approach(this.rut, rutD, 9, dt);
     } else {
       /* =========================== IN THE AIR =========================== */
+      /* popping OFF a rail exits through here, not the grounded else-branch -
+         which also means the clean-grind toast never fired on this path and
+         grindT stayed stale through the whole flight */
+      if (this.grinding) {
+        if (this.grindT > 0.35) UI.toast('GRIND', (this.grindT).toFixed(1) + 's clean');
+        if (this.grindT > 0.12) SFX.railOff(clamp(this.speed / 24, 0.3, 0.9));
+        this.grinding = 0; this.grindT = 0;
+      }
       this.airT += dt; this.groundT = 0; this.grinding = 0;
       if (this.airT > 0.08 && this.airStart === 0) { this.airStart = p.z; }
       v.y -= G_ACC * dt;
