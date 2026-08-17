@@ -4939,6 +4939,19 @@ const SFX = {
       if (ae > 0.45 && Math.random() < 0.45)
         noise(t, 0.03, gv * 0.7, 'highpass', 2400 + Math.random() * 1800, 3.2);
     }
+    /* edge-to-edge bite: the moment the board rolls onto its NEW edge at
+       speed it re-grips with a short 'shhk' - the transient every carve edit
+       is cut to. The continuous layers cannot make it because they follow
+       |edge|, which passes through zero silently at the crossing. Threshold
+       0.14 sits inside the layers' own fade so the bite lands where the
+       carve sound returns. */
+    const eS = (r.edge || 0) > 0.14 ? 1 : (r.edge || 0) < -0.14 ? -1 : 0;
+    if (eS && this._eS && eS !== this._eS && onSnow && sp > 7) {
+      const ev = (0.09 + 0.15 * spn) * (0.5 + 0.5 * (1 - pw)) * gs;
+      noise(t, 0.13, ev, 'bandpass', 850 + sp * 26, 1.6, null, 2400);
+      noise(t + 0.02, 0.09, ev * 0.6, 'highpass', 2600 + sp * 40, 1.0);
+    }
+    if (eS) this._eS = eS;
     if (typeof CLOTH_U !== 'undefined')
       CLOTH_U.value.set(clamp(sp / 28, 0, 1.35), r.edge || 0, air ? 1 : 0);
     /* Wind used to be the loudest thing in the game by a wide margin. It rode
@@ -11103,6 +11116,16 @@ class RiderBody {
        already owns the torso. */
     const coil = air ? turn * sa : 0;
     const coilA = Math.abs(coil);
+    /* switch-stance look: the sim tracks stance (+1 forward, -1 switch) but
+       the pose never read it, so a switch rider kept looking over the NOSE
+       shoulder - away from where they are going. The look chain (spine ->
+       neck -> head twist) now follows stance, filtered so the 180 that flips
+       it turns the head over ~0.4 s instead of snapping. Switch overdrives to
+       1.7x because the duck skeleton is built twisted toward the nose: a bare
+       -1 only brings the head back to square, not over the tail shoulder. */
+    if (this.stB === undefined) this.stB = 1;
+    this.stB += (fin(r.stance, 1) - this.stB) * (1 - Math.exp(-6 * dt));
+    const lk = this.stB < 0 ? this.stB * 1.7 : this.stB;
     if (SEC.dbg) SEC.dbg = { turn, latG, landC, ant, cnt, bnk, om, sp: spRaw };
 
     /* Sliding turn vs carve. Always lean INTO the turn.
@@ -11150,21 +11173,24 @@ class RiderBody {
       0.08);
     const lean = 0.03 - cr * 0.03 + left * 0.05 - right * 0.06
       + (air ? -0.06 : 0) + (down ? 0.35 : 0) - ant * 0.45 - landC * 0.40;
-    P.spine1.set(lean * 0.20, -edge * 0.10 * commit, 0.08 + coil * 0.14);
-    P.spine2.set(lean * 0.12, -edge * 0.06 * commit, 0.05 + coil * 0.18);
-    P.chest.set(lean * 0.06 + breathe, -edge * 0.03 * commit, 0.03 + coil * 0.24);
+    P.spine1.set(lean * 0.20, -edge * 0.10 * commit, 0.08 * lk + coil * 0.14);
+    P.spine2.set(lean * 0.12, -edge * 0.06 * commit, 0.05 * lk + coil * 0.18);
+    P.chest.set(lean * 0.06 + breathe, -edge * 0.03 * commit, 0.03 * lk + coil * 0.24);
     const hl = SEC.head * turn * sa;
-    P.neck.set(0.14 + sp * 0.02, -bnk * 0.03, 0.20 + hl * 0.28);
+    P.neck.set(0.14 + sp * 0.02, -bnk * 0.03, 0.20 * lk + hl * 0.28);
     P.head.set(0.08 + sp * 0.02 - cr * 0.03 + landC * 0.30, -bnk * 0.04,
-      0.24 + Math.sin(t * 0.9) * 0.012 + hl * 0.42);
+      0.24 * lk + Math.sin(t * 0.9) * 0.012 + hl * 0.42);
 
     const swing = Math.sin(t * 2.0) * 0.030 * (0.4 + 0.6 * sp);
     if (!grab) {
       /* coilA pulls both arms in and slightly up while spinning in the air -
          the skater's moment-of-inertia trick, which is also what a snowboarder
          actually does mid-540 */
+      /* a real speed tuck pulls the arms IN along the body, not just lower -
+         cr adduction keeps the silhouette narrow the way a straightlining
+         rider actually holds it */
       const out = (lerp(0.20 + slideQ * 0.14, 0.08 + right * 0.06, carveQ) + (1 - bal) * 0.14)
-        * (1 - 0.45 * coilA);
+        * (1 - 0.45 * coilA) * (1 - 0.30 * cr);
       P.clavF.set(0.04 + right * 0.03, -0.02, -0.02);
       P.clavB.set(0.02, 0.04 + slideQ * 0.04, 0.02);
       P.upperF.set(
@@ -11208,7 +11234,7 @@ class RiderBody {
       S('spine1', 0.10, jt * 0.6, 0.06);
       S('spine2', 0.08, 0, 0.05);
       S('chest', 0.06, 0, 0.04);
-      S('head', 0.08 + GRD.gaze, 0, 0.24);
+      S('head', 0.08 + GRD.gaze, 0, 0.24 * lk);
       /* both arms out wide and near-level, elbows open - none of the riding
          pose's tucked forearms */
       S('clavF', 0.02, -0.10, 0);
