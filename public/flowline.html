@@ -11146,7 +11146,15 @@ class RiderBody {
     this._brSm = this._brSm === undefined ? boardRoll
       : this._brSm + (boardRoll - this._brSm) * (1 - Math.exp(-14 * dt));
     B.board.rotation.z = this._brSm;
-    B.board.rotation.x = -sp * 0.02 * (air ? 0 : 1) - ant * 0.08;
+    /* ollie articulation: the charge is a TAIL PRESS - the nose rides up as
+       the rider loads the tail (+X = nose up, verified against the render) -
+       and the pop leaves the nose high for the first quarter second of
+       flight before the board levels. popT is the same decaying pop clock
+       the arm snap uses, so deck and body stay in phase; popT^2 front-loads
+       the pitch at the snap. The boot IK runs after this write, so the legs
+       follow the press for free: front knee extends, back knee folds. */
+    B.board.rotation.x = -sp * 0.02 * (air ? 0 : 1)
+      + ant * 0.42 + this.popT * this.popT * 0.30;
     B.board.position.y = apex * (0.016 + 0.020 * carveQ) + GRAB.tuck * gt + landC * 0.08;
 
     const pump = (!air && !down) ? Math.sin(t * 1.7) * 0.003 * sp * (0.25 + 0.55 * commit) : 0;
