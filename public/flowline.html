@@ -4928,7 +4928,13 @@ const SFX = {
     set(AU.crunchH, cut * (0.05 + 0.22 * spn) * (0.25 + 0.75 * ae) * (0.35 + 0.65 * ice),
       1400 + sp * 70 + ae * 600);
     set(AU.skid, onSnow ? clamp(r.skid, 0, 1.3) * 0.50 * (0.4 + 0.6 * spn) * (1 - gr) : 0, 1500 + sp * 40 + r.skid * 900);
-    set(AU.powd, onSnow ? pw * (0.16 + 0.62 * spn) * (1 - gr) : 0, 460 + sp * 28);
+    /* a wipeout tumble ploughs a body through snow for ~2.5 s - every contact
+       layer above is gated on state 'ride', which left the whole crash SILENT
+       after the initial thump. The powder bed doubles as the tumble scrub,
+       fading with the slide speed so it dies as the rider stops. */
+    const tumb = (!air && r.state === 'down') ? (0.26 + 0.38 * spn) : 0;
+    set(AU.powd, Math.max(onSnow ? pw * (0.16 + 0.62 * spn) * (1 - gr) : 0, tumb), 460 + sp * 28);
+    if (tumb > 0) set(AU.crunch, tumb * 0.55, 480 + sp * 18);
     /* granular crunch grains — rate tracks speed * edge so a carve chatters */
     this._crT = (this._crT || 0) + dt * cut * (1.6 + spn * 11) * (0.22 + ae);
     while (this._crT > 1) {
