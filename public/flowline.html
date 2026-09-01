@@ -873,13 +873,13 @@ const ST_TQ = 0.25;         // seconds per time tick (u16 -> 4.5 hours)
    metres outside that. Declared here because add()/queryRect() index and
    cull against them. */
 const ST_REACH = 1.15;
-const ST_BERM = 0.55;
+const ST_BERM = 0.10;       // packed snow just outside the rail (~board + a few cm)
+const ST_BERMH = 0.42;      // berm sits lower than the cut
 /* Berm height as a fraction of trench depth. The reference powder photos
    (clean_snowboard_line_powder, powder_snowboard_chunks) show the displaced
    mass piled well up the wall - a cut bank, not a lip - so the trail reads as
    snow MOVED rather than snow removed. Consumed by BOTH the CPU authority
    (displaceAt) and DF_STAMP_FRAG, which interpolates this same constant. */
-const ST_BERMH = 0.68;
 
 /* The wake ribbon's own `depth` is a legacy ~12 cm DECAL, tuned when the
    trail was a translucent overlay rather than geometry. The store holds
@@ -887,7 +887,7 @@ const ST_BERMH = 0.68;
    to what a board really does: R1 asks for deep, rich ruts, and 0.42 m
    is what a fully committed carve reaches here (see the plan's depth
    budget - what limits a rut is drawn resolution, not physics). */
-const ST_GAIN = 3.2;
+const ST_GAIN = 1.0;        // store real metres — a carve is ~0.5 in, not a trench
 
 /* Tile keys must survive NEGATIVE world coordinates. Flowline's x runs
    both sides of the piste centre, and `(x / ST_TILE) | 0` truncates
@@ -1086,12 +1086,12 @@ class StampStore {
       if (lat <= halfW) {
         /* Dual-rail snowboard track: two edge grooves + packed mid-sole.
            Must match DF_STAMP_FRAG exactly. */
-        const railC = halfW * 0.68;
-        const railW = Math.max(halfW * 0.26, 0.035);
+        const railC = halfW * 0.82;
+        const railW = Math.max(halfW * 0.14, 0.016);
         const tt = (lat - railC) / railW;
         const rail = Math.exp(-tt * tt);
         const mid = 1 - smoothstep(0, railC * 0.9, lat);
-        const d = depth * (0.28 * mid + 1.0 * rail);
+        const d = depth * (0.22 * mid + 1.0 * rail);
         if (d > o.depth) o.depth = d;
         const c = (self.u8[b + 14] >> 4) / 15;
         /* whole board width is compacted snow, rails extra so */
@@ -1896,7 +1896,7 @@ float riderShadow(vec3 wp){
      rider) but both are guarded: every pixel this rejects was unconditionally
      shadowed by the clear colour, never by a caster. */
   if(c.z >= 1.0 || c.z <= -1.0) return 0.0;
-  float rd = c.z*0.5+0.5 - 0.0006;                     // depth bias
+  float rd = c.z*0.5+0.5 - 0.0045;                     // depth bias: flush board must not stain the snow
   float sh = 0.0;
   for(int i=0;i<4;i++){
     vec2 o = vec2(i==0||i==3 ? -1.0 : 1.0, i<2 ? -1.0 : 1.0)*uShTex*0.85;
@@ -2304,7 +2304,7 @@ varying vec4 vPar;
 varying vec3 vDir;
 varying vec2 vWP;              // world xz, so chunk noise is world-stable
 void main(){
-  float R = aPar.y*${1.15} + ${0.55};        // ST_REACH, ST_BERM
+  float R = aPar.y*${ST_REACH} + ${ST_BERM};        // ST_REACH, ST_BERM
   vOff = position.xy * R;
   vPar = aPar; vDir = aDir;
   vWP = aCen + vOff;
@@ -2339,31 +2339,31 @@ void main(){
   /* Clods only where the board actually threw snow. A groomed-piste scratch
      is a clean fine line in every reference photo, so fade chunk break-up in
      with cut depth instead of needing a powder attribute. */
-  float chunky = smoothstep(0.06, 0.18, depth);
+  float chunky = smoothstep(0.016, 0.036, depth);
   /* two octaves at clod scale: ~35 cm masses, ~14 cm grain */
   float cn = dfN(vWP*2.9)*0.66 + dfN(vWP*7.1)*0.34;
 
   /* same frame as displaceAt: lat across the travel line, along it */
   float lat   = abs(vOff.x*vDir.x - vOff.y*vDir.y);
   float along = abs(vOff.x*vDir.y + vOff.y*vDir.x);
-  if(along > halfW*${1.15} + ${0.55}) discard;
+  if(along > halfW*${ST_REACH} + ${ST_BERM}) discard;
   /* ragged cut edge: the rim of a powder trench is torn, not machined */
   float hw = halfW*(1.0 + chunky*(cn - 0.5)*0.17);
   float d = 0.0, b = 0.0, c = 0.0, ic = 0.0;
   if(lat <= hw){
     /* Dual-rail snowboard track — two edge grooves + packed mid-sole.
        Must match stamps.displaceAt exactly. */
-    float railC = hw*0.68;
-    float railW = max(hw*0.26, 0.035);
+    float railC = hw*0.82;
+    float railW = max(hw*0.14, 0.016);
     float rail = exp(-pow((lat - railC)/railW, 2.0));
     float mid  = 1.0 - smoothstep(0.0, railC*0.9, lat);
-    d = depth*(0.28*mid + 1.0*rail);
+    d = depth*(0.22*mid + 1.0*rail);
     c = vPar.z*(0.52 + 0.48*mid + 0.22*rail);
     ic = vPar.w;
   } else {
     /* project the berm like halfW already is; max() mirrors the CPU floor so
        a zero attribute can never divide by zero and discard every berm */
-    float u = (lat - hw)/(${0.55}*max(vDir.z, 0.1));
+    float u = (lat - hw)/(${ST_BERM}*max(vDir.z, 0.1));
     if(u >= 1.0) discard;
     b = depth*${ST_BERMH.toFixed(3)}*(1.0 - u)*(1.0 - u);
     /* broken wall: scatter the displaced mass into clods rather than
@@ -4738,7 +4738,6 @@ class Sky {
     ren.setRenderTarget(this.rt);                 // pass 2: sky quad + ranges
     ren.render(this.bakeScene, this.bakeCam);
     ren.setRenderTarget(old);
-    try { ren.getContext().finish(); } catch (e) { }
     this.bakeMs = nowMs() - t0;
     this.lastBake = phase;
   }
@@ -8584,7 +8583,7 @@ const PMAX = 4000;
    cloud is a few hundred big overlapping discs at low alpha, feathered all the
    way to the centre, whose density comes from overlap and whose shape comes
    from the shadowed side going dark and blue (see `lit` below). */
-const SPRAY = { k: 2600, d0: 0.012, exp: 1.85, size: 1.22, alpha: 1.12, clod: 0.38, shade: 1.08 };
+const SPRAY = { k: 9000, d0: 0.002, exp: 1.15, size: 1.15, alpha: 1.05, clod: 0.32, shade: 1.04 };
 class FX {
   constructor(scene) {
     // ---- particle pool
@@ -8962,23 +8961,11 @@ class Wake {
     const pw = num(r.surf && r.surf.pow, 1);   // 0 = groomed hardpack, 1 = deep powder
     const ic = num(r.surf && r.surf.ice, 0);
     const ramp = clamp(this.ramp, 0, 1);
-    const comp = clamp(0.62 + ae * 0.32 + sk * 0.22, 0, 1) * ramp;
-    /* HOW MUCH SNOW THERE IS TO MOVE. Until now depth ignored the surface
-       entirely, so a carve on hardpack cut the same 45 cm trench as one in deep
-       powder - and a deep uniform trench on packed snow is precisely what reads
-       as a ribbon laid ON the slope rather than a cut INTO it.
-
-       Reference photos (uploads/): in powder the board opens a real trench with
-       broken, chunky walls (clean_snowboard_line_powder, snowboard_powder,
-       powder_snowboard_chunks); on a groomed piste the very same turn leaves
-       only a fine shallow scratch a couple of centimetres deep, and a whole
-       slope of them reads as TEXTURE, not as displacement
-       (gondola_piste_texture, snowboard_heavy_tracks_piste). Ice barely cuts
-       at all. The piste read is carried by the compression channel instead -
-       albedo AND roughness AND thickness - which SNOW_FRAG already applies from
-       DF.z, so nothing is lost by letting the geometry go shallow there. */
-    const soft = (0.34 + 0.66 * pw) * (1.0 - 0.50 * ic);
-    const depth = (0.092 + ae * 0.078 + sk * 0.042) * (0.58 + comp * 0.42) * ramp * soft;
+    const INCH = 0.0254;
+    /* ~1.5" groomed carve; powder ~3–4"; ice a light scratch. */
+    const soft = (0.75 + 1.05 * pw) * (1.0 - 0.65 * ic);
+    const depth = (1.10 + 0.55 * ae + 0.35 * sk) * INCH * (0.45 + 0.55 * ramp) * soft;
+    const comp = clamp(0.55 + ae * 0.30 + sk * 0.18, 0, 1) * ramp;
     /* PUBLISH THE CUT (metres of real rut) so the airborne snow can be driven
        by it. Until now fx.spray carried its OWN idea of how much snow was
        moving - `skid*40 + |edge|*sp*1.45 + pow*sp*1.3` - with no ice term at
@@ -8990,9 +8977,9 @@ class Wake {
        let the consumer read it, never re-derive it. */
     r.cutD = depth * ST_GAIN;
     this.ramp += 0.22;
-    /* a locked carve cuts a narrow line; a skid smears a wide one - and the
-       board sinks in powder, so the same turn displaces a wider footprint */
-    let hw = (0.30 + sk * 0.28 + ae * 0.06) * (0.90 + 0.55 * pw);
+    /* Board waist half-width is 0.126 m. Trail sits just outside the rails;
+       a skid smears a little wider, powder a little more. */
+    let hw = (0.130 + 0.018 + sk * 0.070 + ae * 0.012) * (1.00 + 0.16 * pw);
     /* THE FOOTPRINT IS A HEIGHTFIELD, SO IT MUST BE MEASURED IN WORLD XZ.
        The board's width is fixed ALONG THE SURFACE, but the deformation buffer
        is indexed by world xz, so a constant xz half-width covers width/cos(t)
@@ -9784,9 +9771,9 @@ function loadGameTex(url, wrapRepeat, fallback) {
 const _GTEX = {};
 function gameTex(name) {
   if (_GTEX[name]) return _GTEX[name];
-  if (name === 'jacket') _GTEX[name] = loadGameTex('/tex/jacket.jpg', true, fabricTex);
-  else if (name === 'pants') _GTEX[name] = loadGameTex('/tex/pants.jpg', true, pantsCanvas);
-  else if (name === 'boots') _GTEX[name] = loadGameTex('/tex/boots.jpg', true, fabricTex);
+  if (name === 'jacket') _GTEX[name] = loadGameTex('/tex/jacket.jpg?v=2', true, fabricTex);
+  else if (name === 'pants') _GTEX[name] = loadGameTex('/tex/pants.jpg?v=2', true, pantsCanvas);
+  else if (name === 'boots') _GTEX[name] = loadGameTex('/tex/boots.jpg?v=2', true, fabricTex);
   else if (name === 'board') _GTEX[name] = loadGameTex('/tex/board.jpg', false, fabricTex);
   return _GTEX[name];
 }
@@ -10517,17 +10504,17 @@ function riderMat(o = {}) {
           /* Jacket and hem move. Legs stay put — they are a body, not a flag. */
           float jacket = smoothstep(0.52, 0.64, position.y) * (1.0 - smoothstep(0.96, 1.08, position.y));
           float hem = smoothstep(0.70, 0.56, position.y) * smoothstep(0.48, 0.56, position.y);
-          float pants = (1.0 - smoothstep(0.40, 0.56, position.y)) * smoothstep(0.18, 0.28, position.y);
-          float loose = jacket * 1.0 + hem * 0.70 + pants * 0.18;
+          float pants = 1.0 - smoothstep(0.48, 0.58, position.y);
+          float loose = jacket * 1.0 + hem * 0.55 + pants * 0.08;
           float wind = uRide.x * 0.55;
           float n1 = sin(transformed.x*16.0 + uTime*(2.8+3.4*uRide.x) + transformed.y*6.0);
           float n2 = sin(transformed.z*12.0 - uTime*(2.1+2.6*uRide.x));
           float wr = n1*0.62 + n2*0.38;
-          float amp = 0.006 * (0.30 + wind) * loose;
+          float amp = 0.005 * (0.22 + wind) * loose;
           transformed += objectNormal * wr * amp;
-          transformed.z += wind * 0.007 * jacket * (0.4 + 0.6*wr);
+          transformed.z += wind * 0.006 * jacket * (0.4 + 0.6*wr);
           vWr = wr * loose;
-          vBag = pants / max(pants + jacket, 1e-4);
+          vBag = pants;
         #endif
         vec4 wp = modelMatrix * vec4(transformed, 1.0);
         vC = color;
@@ -10562,16 +10549,21 @@ function riderMat(o = {}) {
           #endif
           vec3 tx = texture2D(uMap, uv).rgb;
           #ifdef HAS_MAP_B
-            vec3 txP = texture2D(uMapB, uv*1.15).rgb;
+            vec3 txP = texture2D(uMapB, uv*1.35).rgb;
             tx = mix(tx, txP, vBag);
           #endif
-          base *= mix(vec3(1.0), tx*1.85, uMapAmt);
-          float dlt = 0.004;
+          float bootW = 1.0;
+          #ifndef HAS_CLOTH
+            float lumC = dot(vC, vec3(0.30, 0.59, 0.11));
+            bootW = 1.0 - smoothstep(0.065, 0.125, lumC);
+          #endif
+          base *= mix(vec3(1.0), tx*1.08, uMapAmt * bootW);
+          float dlt = 0.003;
           float hL = texture2D(uMap, uv-vec2(dlt,0.0)).g;
           float hR = texture2D(uMap, uv+vec2(dlt,0.0)).g;
           float hD = texture2D(uMap, uv-vec2(0.0,dlt)).g;
           float hU = texture2D(uMap, uv+vec2(0.0,dlt)).g;
-          N = normalize(N + vec3(hL-hR, 0.0, hD-hU)*1.15);
+          N = normalize(N + vec3(hL-hR, 0.0, hD-hU)*0.22*bootW);
         #endif
         #ifdef HAS_BOARD
           float boardM = step(0.055, abs(vUv.x-0.5)+abs(vUv.y-0.5));
@@ -10579,8 +10571,8 @@ function riderMat(o = {}) {
           base = mix(base, bd, boardM*0.92);
         #endif
         #ifdef HAS_CLOTH
-          N = normalize(N + vec3(vWr, 0.0, -vWr)*0.20*(0.35+uRide.x));
-          base *= 1.0 + vWr*0.08;
+          N = normalize(N + vec3(vWr, 0.0, -vWr)*0.10*(0.25+uRide.x));
+          base *= 1.0 + vWr*0.035;
         #endif
         float ndl = max((dot(N,uSun)+uWrap)/(1.0+uWrap),0.0);
         vec3 amb = mix(uGndCol, uSkyCol, N.y*0.5+0.5);
@@ -10588,14 +10580,17 @@ function riderMat(o = {}) {
         vec3 col = base*(uSunCol*ndl*(1.0-0.85*sh) + amb*0.55);
         float spec = uSpec;
         #ifdef HAS_CLOTH
-          spec += 0.22 + 0.28*uRide.x;
+          spec = min(spec + 0.025, 0.06);  // dry nylon, not wet plastic
+        #endif
+        #ifdef HAS_BOARD
+          spec = mix(spec, 0.22, boardM);
         #endif
         if(spec > 0.001){
           vec3 hv = normalize(uSun - vd);
-          col += uSunCol*pow(max(dot(N,hv),0.0), mix(52.0, 20.0, uRide.x))*spec;
+          col += uSunCol*pow(max(dot(N,hv),0.0), mix(90.0, 48.0, uRide.x))*spec;
         }
         if(uRim > 0.001){
-          float f = pow(1.0 - max(dot(N,-vd),0.0), 3.0);
+          float f = pow(1.0 - max(dot(N,-vd),0.0), 3.4);
           col += uSkyCol*f*uRim;
         }
         col = applyFog(col, dist, vd);
@@ -10624,8 +10619,8 @@ function riderKit(jacket) {
   }
   return (_RKIT[key] = {
     gSoft, gHard, pal,
-    matSoft: riderMat({ wrap: 0.44, rim: 0.16, map: gameTex('jacket'), mapB: gameTex('pants'), mapAmt: 0.78, cloth: true }),
-    matHard: riderMat({ wrap: 0.34, spec: 0.72, rim: 0.10, map: gameTex('boots'), board: gameTex('board'), mapAmt: 0.42 }),
+    matSoft: riderMat({ wrap: 0.50, rim: 0.05, spec: 0.02, map: gameTex('jacket'), mapB: gameTex('pants'), mapAmt: 0.55, cloth: true }),
+    matHard: riderMat({ wrap: 0.38, spec: 0.07, rim: 0.04, map: gameTex('boots'), board: gameTex('board'), mapAmt: 0.50 }),
     stats: {
       tris: (gSoft.index.count + gHard.index.count) / 3,
       verts: gSoft.attributes.position.count + gHard.attributes.position.count,
@@ -10810,15 +10805,18 @@ function ikChain(a, b, L1, L2, target, pole) {
   const to = _rv2.subVectors(target, hip);
   const d = clamp(to.length(), Math.abs(L1 - L2) + 0.02, L1 + L2 - 0.004);
   to.normalize();
-  const bend = Math.acos(clamp((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2), -1, 1));
-  const off = Math.atan2(L2 * Math.sin(bend), L1 - L2 * Math.cos(bend));
-  const axis = _rv3.crossVectors(pole, to);
-  if (axis.lengthSq() < 1e-6) {
-    axis.crossVectors(_rs3.set(0, 1, 0), to);
-    if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0);
+  /* hip angle from the law of cosines — thigh swings this far off the hip→foot line */
+  const off = Math.acos(clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1));
+  /* Bend plane = chain × pole. Same pole on both legs = parallel knees. */
+  const axis = _rv3.crossVectors(to, pole);
+  if (axis.lengthSq() < 1e-8) {
+    axis.crossVectors(to, _rs3.set(0, 0, 1));
+    if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0);
   }
   axis.normalize();
   const dirA = to.clone().applyAxisAngle(axis, off);
+  /* Keep the knee on the pole side — a flipped axis is the kicked-out thigh. */
+  if (dirA.dot(pole) < to.dot(pole)) dirA.applyAxisAngle(axis, -2 * off);
   aimBone(a, dirA);
   a.updateMatrixWorld(true);
   const knee = b.getWorldPosition(_rv1);
@@ -11025,7 +11023,7 @@ class RiderBody {
       _flipC.set(0, FLIP_COM, 0).applyQuaternion(_flipQ);
       _flipD.set(0, FLIP_COM, 0).sub(_flipC).applyQuaternion(this._q);
     } else _flipD.set(0, 0, 0);
-    this.root.position.set(p.x, p.y - r.sink * 0.5 - (r.rut || 0) * RUT_K + 0.045, p.z);
+    this.root.position.set(p.x, p.y - r.sink * 0.5 - (r.rut || 0) * RUT_K + 0.006, p.z);
     /* AFTER the set, or it is overwritten. Zero unless a flip is in progress. */
     if (_flipD.x || _flipD.y || _flipD.z) this.root.position.add(_flipD);
 
@@ -11140,15 +11138,18 @@ class RiderBody {
        Sit/lean follow |edge| (commit), not only a clean carve — a held
        turn that washes a bit must still look like the photo, not stay tall. */
     const apex = Math.abs(edge);
-    const right = Math.max(edge, 0);
-    const left = Math.max(-edge, 0);
+    /* A = left = +edge. Left turn: lean LEFT (local -X), right rail UP. */
+    const left = Math.max(edge, 0);
+    const right = Math.max(-edge, 0);
     const sk = clamp(fin(r.skid, 0), 0, 1.4);
     const commit = apex * sa;
     const carveQ = clamp(apex * (1.2 - sk * 1.15), 0, 1) * sa;
     const slideQ = clamp(sk * 0.85 + apex * (1 - carveQ) * 0.4, 0, 1) * sa;
 
     B.board.quaternion.copy(this.boardBindQ);
-    const boardRoll = -edge * (0.34 + 0.28 * commit + 0.22 * carveQ);
+    /* +rot.z lifts the RIGHT rail. Sign flipped to match the turn: left turn
+       plants the right rail and lifts the left. */
+    const boardRoll = -edge * (0.38 + 0.32 * commit + 0.24 * carveQ);
     this._brSm = this._brSm === undefined ? boardRoll
       : this._brSm + (boardRoll - this._brSm) * (1 - Math.exp(-14 * dt));
     B.board.rotation.z = this._brSm;
@@ -11161,35 +11162,36 @@ class RiderBody {
        follow the press for free: front knee extends, back knee folds. */
     B.board.rotation.x = -sp * 0.02 * (air ? 0 : 1)
       + ant * 0.42 + this.popT * this.popT * 0.30;
-    B.board.position.y = apex * (0.016 + 0.020 * carveQ) + GRAB.tuck * gt + landC * 0.08;
+    /* Keep the deck ON the snow. Lift only for a grab tuck (board to the hand). */
+    B.board.position.y = GRAB.tuck * gt;
 
     const pump = (!air && !down) ? Math.sin(t * 1.7) * 0.003 * sp * (0.25 + 0.55 * commit) : 0;
 
     const crouchTgt = clamp(
-      0.048 + cr * 0.090
-      + commit * 0.100
-      + left * 0.038
-      + right * 0.024
-      + (air ? 0.045 : 0) - this.popT * 0.05, 0, 0.228)
+      0.034 + cr * 0.080
+      + commit * 0.072
+      + left * 0.022
+      + right * 0.016
+      + (air ? 0.040 : 0) - this.popT * 0.05, 0, 0.200)
       + landC + pump + gb * GRD.crouch;
     this._crSm = this._crSm === undefined ? crouchTgt
       : this._crSm + (crouchTgt - this._crSm) * (1 - Math.exp(-12 * dt));
     B.pelvis.position.y = this.bindPelvisY - this._crSm;
     /* Hips stay square on the board. Lean is in the spine; knees bend
        because the pelvis DROPPED, not because the hip bone spun. */
-    B.pelvis.position.x = edge * 0.022 * sa;
-    B.pelvis.position.z = 0.012 * sa;
-    const wb = Math.sin(t * 5.3) * 0.006 * (1 - bal) + wob * 0.03;
+    B.pelvis.position.x = -edge * 0.028 * sa;
+    B.pelvis.position.z = 0;
+    const wb = Math.sin(t * 5.3) * 0.004 * (1 - bal) + wob * 0.02;
     const breathe = Math.sin(t * 1.55) * 0.006 * (1 - clamp(sp, 0, 1));
     P.pelvis.set(
-      0.04 + left * 0.08 + cr * 0.03 + landC * 0.10 + breathe,
-      -edge * 0.08 + wb,
-      0.08);
+      0.02 + commit * 0.04 + cr * 0.02 + landC * 0.08 + breathe,
+      wb,
+      0);
     const lean = 0.03 - cr * 0.03 + left * 0.05 - right * 0.06
       + (air ? -0.06 : 0) + (down ? 0.35 : 0) - ant * 0.45 - landC * 0.40;
-    P.spine1.set(lean * 0.20, -edge * 0.10 * commit, 0.08 * lk + coil * 0.14);
-    P.spine2.set(lean * 0.12, -edge * 0.06 * commit, 0.05 * lk + coil * 0.18);
-    P.chest.set(lean * 0.06 + breathe, -edge * 0.03 * commit, 0.03 * lk + coil * 0.24);
+    P.spine1.set(lean * 0.20, edge * 0.16 * commit, 0.08 * lk + coil * 0.14);
+    P.spine2.set(lean * 0.12, edge * 0.12 * commit, 0.05 * lk + coil * 0.18);
+    P.chest.set(lean * 0.06 + breathe, edge * 0.08 * commit, 0.03 * lk + coil * 0.24);
     const hl = SEC.head * turn * sa;
     P.neck.set(0.14 + sp * 0.02, -bnk * 0.03, 0.20 * lk + hl * 0.28);
     P.head.set(0.08 + sp * 0.02 - cr * 0.03 + landC * 0.30, -bnk * 0.04,
@@ -11303,10 +11305,11 @@ class RiderBody {
     /* world matrices must be current before any IK reads them */
     this.root.updateMatrixWorld(true);
 
-    /* legs: pin the boots to the bindings. Pole is the toe side in WORLD
-       space so the knees always bend the same way — never spin around. */
+    /* legs: pin the boots to the bindings. Pole is the TOE EDGE of the board
+       in world space so both knees bend the same way — stacked, never a kick. */
     const boardM = B.board.matrixWorld;
-    const poleW = _rs4.copy(this.poleF).transformDirection(this.root.matrixWorld).negate();
+    const poleW = _rs4.set(1, 0, 0).transformDirection(boardM);
+    poleW.y *= 0.2;
     if (poleW.lengthSq() < 1e-6) poleW.set(1, 0, 0); else poleW.normalize();
     for (const [th, sh, ft, l1, l2] of [
       ['thighF', 'shinF', 'footF', this.LL.thigh, this.LL.shin],
@@ -13755,6 +13758,11 @@ function frameBody(now) {
   G.csc.render(G.ren, PREVIEW ? PV : G.rider.p, WU.uSun.value);
   G.sh.render(G.ren, G.rider.p, WU.uSun.value);
   G.ren.render(G.scene, G.cam);
+  if (!G._shown) {
+    G._shown = true;
+    const el = document.getElementById('load');
+    if (el) el.classList.add('gone');
+  }
 }
 
 /* ONE control owns all of this. `deform` deliberately tracks `detail` rather
@@ -14078,15 +14086,10 @@ function boot() {
   G.rider.reset();
   initUI();
   G.terr.update(G.rider.p.x, G.rider.p.z, true);
-  G.world.place(G.rider.p.x, G.rider.p.z);
+  G.world.beginPlace(G.rider.p.x, G.rider.p.z);
   G.world.updateSegs(G.rider.p.z);
-  // warm up the renderer before revealing
-  G.ren.compile(G.scene, G.cam);
   requestAnimationFrame(frame);
-  // build the bots' rider geometry while the title screen is up, so the first
-  // spawn of each colour does not solve 10k verts of skin weights in a frame
   riderPrewarm(BOT_KINDS.map(k => k.col));
-  setTimeout(() => document.getElementById('load').classList.add('gone'), 260);
 }
 window.FL = G;
 boot();
